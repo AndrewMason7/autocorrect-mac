@@ -32,7 +32,8 @@ pip3 install -r requirements.txt
 ```
 
 ### 3. Create the Autocorrect App Bundle
-macOS requires Accessibility permissions to be granted to an Application Bundle (`.app`) rather than a loose Python script so it can be trusted by the OS.
+An application bundle gives macOS a stable identity for Accessibility
+permission and background launching.
 
 Run the following commands to create the bundle structure in your Applications folder:
 ```bash
@@ -85,14 +86,14 @@ EOF
 You can easily customize, add, or remove autocorrect mappings directly at the top of the `autocorrect.py` script:
 
 1. **Contractions & Grammar (`grammar` dictionary):** Handles words like contractions (e.g. `dont` -> `don't`). The engine preserves your typing case dynamically (e.g., typing `Dont` corrects to `Don't`, and `DONT` corrects to `DON'T`).
-2. **Proper Nouns & Shortcuts (`shortcuts` dictionary):** Handles word expansions and capitalizations (e.g., `apple watch` -> `Apple Watch`, `gcal` -> `Google Calendar`).
+2. **Proper Nouns & Shortcuts (`shortcuts` dictionary):** Handles word expansions and capitalizations (e.g., `apple watch` -> `Apple Watch` and `github` -> `GitHub`).
 3. **Multi-Word Phrases:** You can define multi-word autocorrect expansions (e.g., `'united states': 'United States'`). The engine automatically scans up to the last 3 typed words to perform multi-word replacements.
 
 > [!IMPORTANT]
-> - Ensure all lookup keys in both dictionaries are typed in **lowercase**.
+> - Store lookup keys in both dictionaries in **lowercase** because typed words are normalized before lookup.
 > - After modifying rules in `autocorrect.py`, restart the daemon to apply changes:
 >   ```bash
->   autocorrect-off && autocorrect-on
+>   launchctl kickstart -k gui/$(id -u)/com.local.autocorrect
 >   ```
 
 ---
@@ -118,6 +119,7 @@ The daemon is configured to start automatically at login and keep itself alive v
 To register the launch agent:
 ```bash
 # Copy the plist file into your LaunchAgents directory
+mkdir -p ~/Library/LaunchAgents
 cp com.local.autocorrect.plist ~/Library/LaunchAgents/
 # Load and start the daemon
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.local.autocorrect.plist
@@ -125,40 +127,30 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.local.autocorrect.pl
 
 ---
 
-## Control Commands & Aliases
+## Managing the Launch Agent
 
-We provide a control script `autocorrect-control.sh` to safely toggle the engine.
+### Restart after code or rule changes
 
-### 1. Copy the control script
+Restart the currently registered launch agent without disabling it:
+
 ```bash
-# Copy the script to your home directory and make it executable
-cp autocorrect-control.sh ~/
-chmod +x ~/autocorrect-control.sh
+launchctl kickstart -k gui/$(id -u)/com.local.autocorrect
 ```
 
-### 2. Configure Shell Aliases
-Add the aliases to your `~/.zshrc` (or preferred shell profile) and reload it:
+Confirm that it is running:
+
 ```bash
-echo 'alias autocorrect-off="~/autocorrect-control.sh off"' >> ~/.zshrc
-echo 'alias autocorrect-on="~/autocorrect-control.sh on"' >> ~/.zshrc
-source ~/.zshrc
+launchctl print gui/$(id -u)/com.local.autocorrect
 ```
 
-### Usage
+### Stop and disable auto-start
 
-#### Stop and Disable (Safe Mode/Recovery Safe)
-To completely stop the daemon, unload it from launchd, and disable auto-start:
 ```bash
-autocorrect-off
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.local.autocorrect.plist
 ```
-*(Under the hood, this runs `~/autocorrect-control.sh off`, which renames the plist and `.app` bundle, guaranteeing it cannot start at boot even in Safe Mode).*
 
-### Start and Enable
-To enable, restore the files, and start the daemon:
-```bash
-autocorrect-on
-```
-*(Runs `~/autocorrect-control.sh on`).*
+Run the `launchctl bootstrap` command from the installation section to enable
+it again.
 
 ---
 

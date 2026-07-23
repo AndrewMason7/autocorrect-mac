@@ -123,7 +123,7 @@ class TextContextTests(unittest.TestCase):
         self.assertEqual(context.text, "dont")
         self.assertEqual(context.selection, original_selection)
 
-    def test_no_op_accessibility_write_is_not_treated_as_success(self):
+    def test_no_op_accessibility_write_requests_safe_fallback(self):
         context = FakeTextContext("dont")
         inspection = context.inspect_before_caret("dont")
         original_selection = context.selection
@@ -131,7 +131,7 @@ class TextContextTests(unittest.TestCase):
 
         result = context.replace(inspection, "dont", "don't ")
 
-        self.assertEqual(result.status, ContextStatus.FAILED)
+        self.assertEqual(result.status, ContextStatus.UNAVAILABLE)
         self.assertEqual(context.text, "dont")
         self.assertEqual(context.selection, original_selection)
 

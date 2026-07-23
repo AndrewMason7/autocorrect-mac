@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import time
 from typing import Any, Optional
 
 import ApplicationServices as AX
@@ -265,38 +266,56 @@ class MacTextContext:
                 ContextStatus.FAILED, "could not replace selected text"
             )
 
-        verify_error, verify_text = self._copy_attribute(
-            current.element, AX.kAXValueAttribute
-        )
-        if verify_error != AX.kAXErrorSuccess or not isinstance(verify_text, str):
-            return ReplacementResult(
-                ContextStatus.FAILED,
-                "could not verify accessibility replacement text",
-            )
-
+        verify_error = AX.kAXErrorNoValue
+        verify_text = None
+        expected_text = None
         current_caret_index = utf16_offset_to_index(
             current.text, current.selection_location
         )
         current_start_index = utf16_offset_to_index(
             current.text, source_start
         )
+        if current_caret_index is not None and current_start_index is not None:
+            expected_text = (
+                current.text[:current_start_index]
+                + replacement
+                + current.text[current_caret_index:]
+            )
+
+        for delay in (0.0, 0.003, 0.007):
+            if delay:
+                time.sleep(delay)
+            verify_error, verify_text = self._copy_attribute(
+                current.element, AX.kAXValueAttribute
+            )
+            if verify_error != AX.kAXErrorSuccess:
+                break
+            if isinstance(verify_text, str) and verify_text == expected_text:
+                break
+
+        if verify_error != AX.kAXErrorSuccess or not isinstance(verify_text, str):
+            return ReplacementResult(
+                ContextStatus.FAILED,
+                "could not verify accessibility replacement text",
+            )
+
         if current_caret_index is None or current_start_index is None:
             return ReplacementResult(
                 ContextStatus.FAILED,
                 "could not validate accessibility replacement offsets",
             )
-        expected_text = (
-            current.text[:current_start_index]
-            + replacement
-            + current.text[current_caret_index:]
-        )
         if verify_text != expected_text:
             if verify_text == current.text:
-                self._set_attribute(
+                restore_error = self._set_attribute(
                     current.element,
                     AX.kAXSelectedTextRangeAttribute,
                     original_range,
                 )
+                if restore_error == AX.kAXErrorSuccess:
+                    return ReplacementResult(
+                        ContextStatus.UNAVAILABLE,
+                        "accessibility write changed no text; use fallback",
+                    )
             return ReplacementResult(
                 ContextStatus.FAILED,
                 "accessibility replacement did not produce the expected text",
