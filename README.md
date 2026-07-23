@@ -4,9 +4,12 @@ A fast, lightweight, and completely local autocorrect daemon for macOS. It monit
 
 ## Features
 
-- **Blazing Fast Key Simulation:** Performs erasures and re-types replacements in **less than 270ms** using optimized Quartz event posting.
-- **Race Condition Prevention:** Refined timing intervals prevent collisions between simulated backspaces and physical typing.
-- **Dynamic Modifier Verification & Shortcut Protection:** Queries macOS device modifier flags dynamically on each keypress (`NSEvent.modifierFlags()`). It also monitors modifiers *during* simulation, instantly aborting if you press `Command`, `Option`, or `Control` mid-correction to prevent executing dangerous system shortcuts (like logouts or closing apps).
+- **Context-aware replacements:** Reads the focused field and caret through the macOS Accessibility API, then verifies the exact source text before changing it.
+- **No trigger/deletion race:** AX replacements leave the original trigger untouched; the fallback suppresses and replays it exactly once.
+- **Newline-aware capitalization:** Distinguishes hard `LF`/`CRLF` line breaks from visual line wrapping.
+- **Safe fallback:** Uses synchronous keystrokes when a field does not expose Accessibility text. If context is stale or unsafe, the correction is skipped instead of guessing.
+- **Selection and password safety:** Never edits secure text fields or an active text selection.
+- **Modifier and shortcut protection:** Queries macOS modifier flags on each physical keypress and clears pending context whenever `Command`, `Option`, or `Control` is active.
 - **Production-Grade Log Rotation:** Uses a built-in `RotatingFileHandler` capped at 5MB with a 3-file history rotation, ensuring your system disk space is never filled by logs.
 - **Bypass App Nap & Throttling:** Asserts a latency-critical activity reservation via Cocoa `NSProcessInfo` options (`NSActivityUserInitiated | NSActivityLatencyCritical`) to prevent the macOS kernel from pausing or throttling the daemon's event loop.
 - **Singleton Process Lock:** Uses Unix file locking (`fcntl` flock on `~/.autocorrect.lock`) to guarantee that only one instance of the daemon executes at any time. This prevents event-loop conflict cascades and key-spamming if the app is launched multiple times (e.g., by both launchd and macOS Login Items).
@@ -23,9 +26,9 @@ cd autocorrect-mac
 ```
 
 ### 2. Install dependencies
-Install the required python library `pynput` and `pyobjc`:
+Install the keyboard, Cocoa, and Accessibility bindings:
 ```bash
-pip3 install pynput pyobjc-framework-Cocoa
+pip3 install -r requirements.txt
 ```
 
 ### 3. Create the Autocorrect App Bundle
@@ -96,6 +99,19 @@ You can easily customize, add, or remove autocorrect mappings directly at the to
 
 ## Usage
 
+### Context behavior
+
+For each possible correction, the daemon first asks the focused text field for
+its text and insertion-point range. It applies the change only when the exact
+typed source is immediately before a collapsed caret. Secure fields, active
+selections, and changed/moved carets are left untouched.
+
+Some apps and custom editors do not expose editable text through Accessibility.
+In those fields, the daemon falls back to its local keystroke history. The
+fallback deletes only the source text; the original trigger is suppressed only
+after the replacement has been posted. Navigation, app switching shortcuts,
+and stale context clear phrase history.
+
 ### Auto-Start at Login (Launchd Daemon)
 The daemon is configured to start automatically at login and keep itself alive via a launch agent plist.
 
@@ -152,5 +168,15 @@ autocorrect-on
 Monitor corrections and activity in real-time:
 ```bash
 tail -f ~/autocorrect.log
+```
+
+---
+
+## Tests
+
+Run the context, newline, range, and replacement regressions with:
+
+```bash
+python3 -m unittest discover -s tests -v
 ```
 
