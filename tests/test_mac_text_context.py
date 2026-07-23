@@ -1,4 +1,5 @@
 import unittest
+from collections import Counter
 
 import ApplicationServices as AX
 
@@ -20,11 +21,16 @@ class FakeTextContext(MacTextContext):
         self.settable = True
         self.fail_selected_text = False
         self.ignore_selected_text = False
+        self._direct_write_unsupported = {}
+        self._direct_write_supported = {}
+        self.copy_counts = Counter()
+        self.set_counts = Counter()
 
     def _focused_element(self):
         return AX.kAXErrorSuccess, self.element
 
     def _copy_attribute(self, element, attribute):
+        self.copy_counts[attribute] += 1
         if attribute == AX.kAXRoleAttribute:
             return AX.kAXErrorSuccess, AX.kAXTextAreaRole
         if attribute == AX.kAXSubroleAttribute:
@@ -38,10 +44,31 @@ class FakeTextContext(MacTextContext):
             return AX.kAXErrorSuccess, value
         return AX.kAXErrorAttributeUnsupported, None
 
+    def _copy_parameterized(self, element, attribute, parameter):
+        self.copy_counts[attribute] += 1
+        success, requested_range = AX.AXValueGetValue(
+            parameter, AX.kAXValueCFRangeType, None
+        )
+        if (
+            attribute != AX.kAXStringForRangeParameterizedAttribute
+            or not success
+        ):
+            return AX.kAXErrorParameterizedAttributeUnsupported, None
+        location, length = requested_range
+        start = utf16_offset_to_index(self.text, location)
+        end = utf16_offset_to_index(self.text, location + length)
+        if start is None or end is None:
+            return AX.kAXErrorIllegalArgument, None
+        return AX.kAXErrorSuccess, self.text[start:end]
+
+    def _element_pid(self, element):
+        return 123
+
     def _is_settable(self, element, attribute):
         return AX.kAXErrorSuccess, self.settable
 
     def _set_attribute(self, element, attribute, value):
+        self.set_counts[attribute] += 1
         if attribute == AX.kAXSelectedTextRangeAttribute:
             success, selection = AX.AXValueGetValue(
                 value, AX.kAXValueCFRangeType, None
@@ -86,6 +113,7 @@ class TextContextTests(unittest.TestCase):
         inspection = context.inspect_before_caret("dont")
         self.assertEqual(inspection.status, ContextStatus.AVAILABLE)
         self.assertFalse(inspection.sentence_start)
+        self.assertTrue(inspection.snapshot.bounded)
 
         mismatch = context.inspect_before_caret("wont")
         self.assertEqual(mismatch.status, ContextStatus.MISMATCH)
@@ -134,6 +162,51 @@ class TextContextTests(unittest.TestCase):
         self.assertEqual(result.status, ContextStatus.UNAVAILABLE)
         self.assertEqual(context.text, "dont")
         self.assertEqual(context.selection, original_selection)
+
+        selected_text_writes = context.set_counts[AX.kAXSelectedTextAttribute]
+        context.ignore_selected_text = False
+        retry_inspection = context.inspect_before_caret("dont")
+        retry = context.replace(retry_inspection, "dont", "don't")
+        self.assertEqual(retry.status, ContextStatus.UNAVAILABLE)
+        self.assertEqual(
+            context.set_counts[AX.kAXSelectedTextAttribute],
+            selected_text_writes,
+        )
+
+    def test_replace_revalidates_without_repeating_role_checks(self):
+        context = FakeTextContext("dont")
+        inspection = context.inspect_before_caret("dont")
+
+        result = context.replace(inspection, "dont", "don't")
+
+        self.assertTrue(result.applied)
+        self.assertEqual(context.copy_counts[AX.kAXRoleAttribute], 1)
+        self.assertEqual(context.copy_counts[AX.kAXSubroleAttribute], 1)
+
+    def test_cached_fallback_still_revalidates_focus(self):
+        context = FakeTextContext("dont")
+        inspection = context.inspect_before_caret("dont")
+        context.ignore_selected_text = True
+        self.assertEqual(
+            context.replace(inspection, "dont", "don't").status,
+            ContextStatus.UNAVAILABLE,
+        )
+
+        cached_inspection = context.inspect_before_caret("dont")
+        context.element = object()
+        result = context.replace(cached_inspection, "dont", "don't")
+
+        self.assertEqual(result.status, ContextStatus.MISMATCH)
+
+    def test_capability_cache_is_bounded(self):
+        context = FakeTextContext("dont")
+        cache = {}
+        for index in range(200):
+            context._cache_capability(cache, index, None)
+
+        self.assertEqual(len(cache), context._CAPABILITY_CACHE_LIMIT)
+        self.assertNotIn(0, cache)
+        self.assertIn(199, cache)
 
 
 if __name__ == "__main__":

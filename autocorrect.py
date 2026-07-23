@@ -1,9 +1,11 @@
+import atexit
 import logging
 import sys
 import fcntl
 import os
+import queue
 from dataclasses import dataclass
-from logging.handlers import RotatingFileHandler
+from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 
 from Foundation import NSMaxRange, NSString
 from Quartz import (
@@ -62,8 +64,8 @@ def enforce_singleton():
     # Fallback in case both directories are write-restricted
     sys.stderr.write(f"Warning: Could not create lock file due to: {last_err}. Proceeding with caution.\n")
 
-# Setup production-safe rotating file logging
-log_handlers = [
+# Keep file I/O off the latency-sensitive event-tap thread.
+log_sinks = [
     RotatingFileHandler(
         os.path.expanduser("~/autocorrect.log"),
         maxBytes=5 * 1024 * 1024,  # 5 MB limit per log file
@@ -72,13 +74,19 @@ log_handlers = [
     )
 ]
 if sys.stdout and sys.stdout.isatty():
-    log_handlers.append(logging.StreamHandler(sys.stdout))
+    log_sinks.append(logging.StreamHandler(sys.stdout))
 
+log_queue = queue.SimpleQueue()
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=log_handlers
+    handlers=[QueueHandler(log_queue)],
 )
+log_listener = QueueListener(
+    log_queue, *log_sinks, respect_handler_level=True
+)
+log_listener.start()
+atexit.register(log_listener.stop)
 logger = logging.getLogger("V26MacEngine")
 
 grammar = {'i': 'I', "i'": "I'", 'im': "I'm", "i'm": "I'm", 'id': "I'd", "i'd": "I'd", 'ive': "I've", "i've": "I've", 'ill': "I'll", "i'll": "I'll", 'wed': "we'd", "we'd": "we'd", 'weree': "we're", "we'ree": "we're", "we're": "we're", 'weve': "we've", "we've": "we've", "we'll": "we'll", 'welll': "we'll", "we'lll": "we'll", 'youd': "you'd", "you'd": "you'd", 'youre': "you're", "you're": "you're", 'youve': "you've", "you've": "you've", 'youll': "you'll", "you'll": "you'll", 'hed': "he'd", "he'd": "he'd", 'hes': "he's", "he's": "he's", "he'll": "he'll", 'shed': "she'd", "she'd": "she'd", 'shes': "she's", "she's": "she's", 'shell': "she'll", "she'll": "she'll", 'itd': "it'd", "it'd": "it'd", "it's": "it's", 'itss': "it's", "it'ss": "it's", 'itll': "it'll", "it'll": "it'll", 'theyd': "they'd", "they'd": "they'd", 'theyre': "they're", "they're": "they're", 'theyve': "they've", "they've": "they've", 'theyll': "they'll", "they'll": "they'll", 'thats': "that's", "that's": "that's", 'thatd': "that'd", "that'd": "that'd", 'thatll': "that'll", "that'll": "that'll", 'theres': "there's", "there's": "there's", 'thered': "there'd", "there'd": "there'd", 'therell': "there'll", "there'll": "there'll", 'heres': "here's", "here's": "here's", 'whats': "what's", "what's": "what's", 'whatd': "what'd", "what'd": "what'd", 'whatll': "what'll", "what'll": "what'll", 'whatve': "what've", "what've": "what've", 'wheres': "where's", "where's": "where's", 'whered': "where'd", "where'd": "where'd", 'wherell': "where'll", "where'll": "where'll", 'whereve': "where've", "where've": "where've", 'whens': "when's", "when's": "when's", 'whend': "when'd", "when'd": "when'd", 'whenve': "when've", "when've": "when've", 'whys': "why's", "why's": "why's", 'hows': "how's", "how's": "how's", 'howd': "how'd", "how'd": "how'd", 'howve': "how've", "how've": "how've", 'whos': "who's", "who's": "who's", 'whod': "who'd", "who'd": "who'd", 'wholl': "who'll", "who'll": "who'll", 'whove': "who've", "who've": "who've", 'shouldve': "should've", "should've": "should've", 'couldve': "could've", "could've": "could've", 'wouldve': "would've", "would've": "would've", 'mightve': "might've", "might've": "might've", 'mustve': "must've", "must've": "must've", 'cant': "can't", "can't": "can't", 'dont': "don't", "don't": "don't", 'wont': "won't", "won't": "won't", 'didnt': "didn't", 'isnt': "isn't", "isn't": "isn't", 'arent': "aren't", "aren't": "aren't", 'wasnt': "wasn't", "wasn't": "wasn't", 'werent': "weren't", "weren't": "weren't", 'hasnt': "hasn't", 'havent': "haven't", "haven't": "haven't", 'hadnt': "hadn't", "hadn't": "hadn't", 'doesnt': "doesn't", 'wouldnt': "wouldn't", "wouldn't": "wouldn't", 'couldnt': "couldn't", "couldn't": "couldn't", 'shouldnt': "shouldn't", "shouldn't": "shouldn't", 'mustnt': "mustn't", "mustn't": "mustn't", 'neednt': "needn't", "needn't": "needn't", 'shant': "shan't", "shan't": "shan't", 'darent': "daren't", 'aint': "ain't", "ain't": "ain't", 'lets': "let's", "let's": "let's", 'everybodys': "everybody's", "everybody's": "everybody's", 'everyones': "everyone's", "everyone's": "everyone's", 'somebodys': "somebody's", "somebody's": "somebody's", 'someones': "someone's", "someone's": "someone's", 'nobodys': "nobody's", "nobody's": "nobody's", 'anybodys': "anybody's", "anybody's": "anybody's", 'anyones': "anyone's", "anyone's": "anyone's", 'nothings': "nothing's", "nothing's": "nothing's", 'somethings': "something's", "something's": "something's", 'anythings': "anything's", "anything's": "anything's", 'everythings': "everything's", "everything's": "everything's"}
@@ -118,7 +126,7 @@ class V26MacEngine:
         self.corrections = corrections
         self.buffer = ""
         self.prev_words = []
-        self.history = []
+        self.history = ""
         self.synthesized_queue = []
         self.context_confident = False
 
@@ -136,14 +144,14 @@ class V26MacEngine:
     def handle_char(self, char: str):
         if char in _TRIGGERS:
             raise ValueError("trigger characters must use prepare/commit_trigger")
-        self.history.append(char)
+        self.history += char
         if len(self.history) > 1000:
             self.history = self.history[-500:]
         self.buffer += char
 
     def handle_backspace(self):
         if self.history:
-            self.history.pop()
+            self.history = self.history[:-1]
 
         if self.buffer:
             self.buffer = self.buffer[:-1]
@@ -153,7 +161,7 @@ class V26MacEngine:
     def reset(self):
         self.buffer = ""
         self.prev_words.clear()
-        self.history.clear()
+        self.history = ""
         self.synthesized_queue.clear()
         self.context_confident = False
 
@@ -182,10 +190,11 @@ class V26MacEngine:
         return None
 
     def _local_sentence_start(self, source: str) -> bool:
-        history_text = "".join(self.history)
-        if not self.context_confident or not history_text.endswith(source):
+        if not self.context_confident or not self.history.endswith(source):
             return False
-        return is_sentence_start(history_text[:-len(source)] if source else history_text)
+        return is_sentence_start(
+            self.history[:-len(source)] if source else self.history
+        )
 
     def prepare_trigger(self, trigger: str) -> CorrectionCandidate | None:
         word = self.buffer.lower()
@@ -254,8 +263,17 @@ class V26MacEngine:
             sentence_start=sentence_start,
         )
 
+    def candidate_may_correct(self, candidate: CorrectionCandidate) -> bool:
+        if candidate.replacement_template is not None:
+            return True
+        if any(c in candidate.word for c in ("@", ":", "/", "\\")):
+            return False
+        if self._capitalize_first_alpha(self.buffer) == self.buffer:
+            return False
+        return not self.context_confident or candidate.local_sentence_start
+
     def local_source_matches(self, candidate: CorrectionCandidate) -> bool:
-        return "".join(self.history).endswith(candidate.source)
+        return self.history.endswith(candidate.source)
 
     def commit_trigger(
         self,
@@ -269,23 +287,21 @@ class V26MacEngine:
         if stale:
             self.reset()
             if trigger in (".", "!", "?", "\n"):
-                self.history.append(trigger)
+                self.history = trigger
                 self.context_confident = True
             return
 
         if applied and proposal is not None:
-            history_text = "".join(self.history)
-            if history_text.endswith(proposal.source):
-                history_text = (
-                    history_text[:-len(proposal.source)]
+            if self.history.endswith(proposal.source):
+                self.history = (
+                    self.history[:-len(proposal.source)]
                     + proposal.replacement
                     + trigger
                 )
             else:
-                history_text = proposal.replacement + trigger
-            self.history = list(history_text)
+                self.history = proposal.replacement + trigger
         else:
-            self.history.append(trigger)
+            self.history += trigger
 
         if trigger == " " and raw_buffer:
             if applied and proposal is not None:
@@ -394,6 +410,113 @@ class TriggerSuppressor:
             return None
         return event
 
+
+class CorrectionCoordinator:
+    """Coordinates a trigger without starting a global keyboard listener."""
+
+    def __init__(
+        self,
+        engine: V26MacEngine,
+        text_context: MacTextContext,
+        fallback: KeystrokeFallback,
+        suppressor: TriggerSuppressor,
+        log=logger,
+    ):
+        self.engine = engine
+        self.text_context = text_context
+        self.fallback = fallback
+        self.suppressor = suppressor
+        self.log = log
+
+    def apply_trigger(self, trigger: str):
+        candidate = self.engine.prepare_trigger(trigger)
+        if candidate is None:
+            self.engine.commit_trigger(trigger, None, None, applied=False)
+            return
+
+        if not self.engine.candidate_may_correct(candidate):
+            self.engine.commit_trigger(
+                trigger, candidate, None, applied=False
+            )
+            return
+
+        inspection = self.text_context.inspect_before_caret(candidate.source)
+        if inspection.status is ContextStatus.AVAILABLE:
+            sentence_start = bool(inspection.sentence_start)
+        elif inspection.status is ContextStatus.UNAVAILABLE:
+            sentence_start = candidate.local_sentence_start
+        else:
+            self.log.info(
+                "[SKIPPED] Context is unsafe or stale: %s", inspection.reason
+            )
+            self.engine.commit_trigger(
+                trigger, candidate, None, applied=False, stale=True
+            )
+            return
+
+        proposal = self.engine.finalize_candidate(candidate, sentence_start)
+        if proposal is None:
+            self.engine.commit_trigger(
+                trigger, candidate, None, applied=False
+            )
+            return
+
+        applied = False
+        stale = False
+        suppress_original_trigger = False
+        if inspection.status is ContextStatus.AVAILABLE:
+            result = self.text_context.replace(
+                inspection,
+                proposal.source,
+                proposal.replacement,
+            )
+            applied = result.applied
+            if (
+                not applied
+                and result.status is ContextStatus.UNAVAILABLE
+                and self.engine.local_source_matches(candidate)
+            ):
+                fallback_result = self.fallback.apply(
+                    self.engine,
+                    proposal.source,
+                    proposal.replacement,
+                    trigger,
+                )
+                applied = fallback_result.applied
+                stale = fallback_result.uncertain
+                suppress_original_trigger = applied
+            elif not applied:
+                stale = True
+                self.log.info(
+                    "[SKIPPED] Accessibility replacement: %s", result.reason
+                )
+        elif self.engine.local_source_matches(candidate):
+            fallback_result = self.fallback.apply(
+                self.engine,
+                proposal.source,
+                proposal.replacement,
+                trigger,
+            )
+            applied = fallback_result.applied
+            stale = fallback_result.uncertain
+            suppress_original_trigger = applied
+        else:
+            stale = True
+
+        if suppress_original_trigger:
+            self.suppressor.suppress_current()
+        if applied:
+            self.log.info(
+                "[SUCCESS] '%s' -> '%s' (Trigger: '%s')",
+                proposal.source,
+                proposal.replacement,
+                trigger.replace("\n", "\\n").replace("\t", "\\t"),
+            )
+        self.engine.commit_trigger(
+            trigger, candidate, proposal, applied=applied, stale=stale
+        )
+
+
 def run_mac_engine():
     # Enforce process singleton status to prevent concurrent instance loops
     enforce_singleton()
@@ -402,6 +525,9 @@ def run_mac_engine():
     text_context = MacTextContext()
     fallback = KeystrokeFallback(keyboard.Controller())
     suppressor = TriggerSuppressor(on_external_injected=engine.reset)
+    coordinator = CorrectionCoordinator(
+        engine, text_context, fallback, suppressor
+    )
     logger.info("Loaded %d autocorrect rules for macOS.", len(CORRECTIONS))
 
     # Assert latency-critical status to completely bypass macOS App Nap and process throttling
@@ -415,86 +541,6 @@ def run_mac_engine():
     except Exception as e:
         logger.error("Failed to assert latency-critical status: %s", e)
 
-    def apply_trigger(trigger: str):
-        candidate = engine.prepare_trigger(trigger)
-        if candidate is None:
-            engine.commit_trigger(trigger, None, None, applied=False)
-            return
-
-        inspection = text_context.inspect_before_caret(candidate.source)
-        if inspection.status is ContextStatus.AVAILABLE:
-            sentence_start = bool(inspection.sentence_start)
-        elif inspection.status is ContextStatus.UNAVAILABLE:
-            sentence_start = candidate.local_sentence_start
-        else:
-            logger.info(
-                "[SKIPPED] Context is unsafe or stale: %s", inspection.reason
-            )
-            engine.commit_trigger(
-                trigger, candidate, None, applied=False, stale=True
-            )
-            return
-
-        proposal = engine.finalize_candidate(candidate, sentence_start)
-        if proposal is None:
-            engine.commit_trigger(
-                trigger, candidate, None, applied=False
-            )
-            return
-
-        applied = False
-        stale = False
-        suppress_original_trigger = False
-        if inspection.status is ContextStatus.AVAILABLE:
-            result = text_context.replace(
-                inspection,
-                proposal.source,
-                proposal.replacement,
-            )
-            applied = result.applied
-            if (
-                not applied
-                and result.status is ContextStatus.UNAVAILABLE
-                and engine.local_source_matches(candidate)
-            ):
-                fallback_result = fallback.apply(
-                    engine,
-                    proposal.source,
-                    proposal.replacement,
-                    trigger,
-                )
-                applied = fallback_result.applied
-                stale = fallback_result.uncertain
-                suppress_original_trigger = applied
-            elif not applied:
-                stale = True
-                logger.info("[SKIPPED] Accessibility replacement: %s", result.reason)
-        elif engine.local_source_matches(candidate):
-            fallback_result = fallback.apply(
-                engine,
-                proposal.source,
-                proposal.replacement,
-                trigger,
-            )
-            applied = fallback_result.applied
-            stale = fallback_result.uncertain
-            suppress_original_trigger = applied
-        else:
-            stale = True
-
-        if suppress_original_trigger:
-            suppressor.suppress_current()
-        if applied:
-            logger.info(
-                "[SUCCESS] '%s' -> '%s' (Trigger: '%s')",
-                proposal.source,
-                proposal.replacement,
-                trigger.replace("\n", "\\n").replace("\t", "\\t"),
-            )
-        engine.commit_trigger(
-            trigger, candidate, proposal, applied=applied, stale=stale
-        )
-
     def on_press(key, injected=False):
         try:
             char_rep = engine._get_key_char(key)
@@ -503,7 +549,8 @@ def run_mac_engine():
                 return
 
             suppressor.begin_key_down()
-            engine.synthesized_queue.clear()
+            if engine.synthesized_queue:
+                engine.synthesized_queue.clear()
 
             # Check current modifier flags dynamically from the OS to ignore shortcuts
             try:
@@ -522,7 +569,7 @@ def run_mac_engine():
                 if char_rep == "backspace":
                     engine.handle_backspace()
                 elif char_rep in _TRIGGERS:
-                    apply_trigger(char_rep)
+                    coordinator.apply_trigger(char_rep)
                 else:
                     engine.handle_char(char_rep)
             elif key == keyboard.Key.backspace:

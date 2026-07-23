@@ -8,9 +8,10 @@ A fast, lightweight, and completely local autocorrect daemon for macOS. It monit
 - **No trigger/deletion race:** AX replacements leave the original trigger untouched; the fallback suppresses and replays it exactly once.
 - **Newline-aware capitalization:** Distinguishes hard `LF`/`CRLF` line breaks from visual line wrapping.
 - **Safe fallback:** Uses synchronous keystrokes when a field does not expose Accessibility text. If context is stale or unsafe, the correction is skipped instead of guessing.
+- **Optimized event path:** Skips unnecessary Accessibility work, reads bounded text around the caret when supported, and caches verified fallback capability per field.
 - **Selection and password safety:** Never edits secure text fields or an active text selection.
 - **Modifier and shortcut protection:** Queries macOS modifier flags on each physical keypress and clears pending context whenever `Command`, `Option`, or `Control` is active.
-- **Production-Grade Log Rotation:** Uses a built-in `RotatingFileHandler` capped at 5MB with a 3-file history rotation, ensuring your system disk space is never filled by logs.
+- **Asynchronous Log Rotation:** Moves file writes off the keyboard callback and rotates logs at 5MB with three backups.
 - **Bypass App Nap & Throttling:** Asserts a latency-critical activity reservation via Cocoa `NSProcessInfo` options (`NSActivityUserInitiated | NSActivityLatencyCritical`) to prevent the macOS kernel from pausing or throttling the daemon's event loop.
 - **Singleton Process Lock:** Uses Unix file locking (`fcntl` flock on `~/.autocorrect.lock`) to guarantee that only one instance of the daemon executes at any time. This prevents event-loop conflict cascades and key-spamming if the app is launched multiple times (e.g., by both launchd and macOS Login Items).
 - **macOS TCC Compatibility:** Can be packaged as a background `.app` bundle helper to satisfy macOS Privacy & Security (Accessibility) requirements permanently.
@@ -113,6 +114,22 @@ fallback deletes only the source text; the original trigger is suppressed only
 after the replacement has been posted. Navigation, app switching shortcuts,
 and stale context clear phrase history.
 
+Safari and other apps may expose text but ignore direct Accessibility writes.
+After a verified no-op, the daemon temporarily remembers that field and moves
+straight to the validated keystroke fallback on subsequent corrections.
+
+### Performance
+
+The ordinary character path does not query Accessibility. Trigger processing
+uses a bounded context window when the focused field supports range reads and
+falls back to the full value only when needed. Internal history is bounded, AX
+capability caches are size-limited and expiring, and logging uses a background
+queue.
+
+On the development Mac, the launch agent measured `0.0%` CPU while idle and
+about `25 MB` resident memory. Actual usage varies by macOS version, Python
+version, browser, and typing activity.
+
 ### Auto-Start at Login (Launchd Daemon)
 The daemon is configured to start automatically at login and keep itself alive via a launch agent plist.
 
@@ -166,7 +183,7 @@ tail -f ~/autocorrect.log
 
 ## Tests
 
-Run the context, newline, range, and replacement regressions with:
+Run the context, newline, range, replacement, and performance regressions with:
 
 ```bash
 python3 -m unittest discover -s tests -v

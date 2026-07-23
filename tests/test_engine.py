@@ -1,6 +1,6 @@
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from Quartz import (
     kCGEventKeyDown,
@@ -10,11 +10,13 @@ from Quartz import (
 from pynput import keyboard
 
 from autocorrect import (
+    CorrectionCoordinator,
     KeystrokeFallback,
     TriggerSuppressor,
     V26MacEngine,
     composed_character_count,
 )
+from mac_text_context import ContextInspection, ContextStatus
 
 
 class FakeController:
@@ -95,7 +97,7 @@ class EngineTests(unittest.TestCase):
 
         self.assertEqual(self.engine.buffer, "")
         self.assertEqual(self.engine.prev_words, [])
-        self.assertEqual(self.engine.history, [])
+        self.assertEqual(self.engine.history, "")
         self.assertFalse(self.engine.context_confident)
 
     def test_successful_commit_rewrites_only_validated_source(self):
@@ -105,7 +107,7 @@ class EngineTests(unittest.TestCase):
 
         self.engine.commit_trigger(" ", candidate, proposal, applied=True)
 
-        self.assertEqual("".join(self.engine.history), "don't ")
+        self.assertEqual(self.engine.history, "don't ")
         self.assertEqual(self.engine.prev_words, [("dont", "don't")])
 
     def test_keystroke_fallback_never_deletes_the_trigger(self):
@@ -141,6 +143,37 @@ class EngineTests(unittest.TestCase):
                 candidate, candidate.local_sentence_start
             )
         )
+
+    def test_confident_mid_sentence_non_match_skips_accessibility(self):
+        engine = V26MacEngine({})
+        type_text(engine, "Hello")
+        first = engine.prepare_trigger(" ")
+        engine.commit_trigger(" ", first, None, applied=False)
+        type_text(engine, "ordinary")
+        context = Mock()
+        coordinator = CorrectionCoordinator(
+            engine, context, Mock(), Mock(), Mock()
+        )
+
+        coordinator.apply_trigger(" ")
+
+        context.inspect_before_caret.assert_not_called()
+        self.assertEqual(engine.history, "Hello ordinary ")
+
+    def test_unknown_sentence_context_still_queries_accessibility(self):
+        engine = V26MacEngine({})
+        type_text(engine, "ordinary")
+        context = Mock()
+        context.inspect_before_caret.return_value = ContextInspection(
+            ContextStatus.UNAVAILABLE
+        )
+        coordinator = CorrectionCoordinator(
+            engine, context, Mock(), Mock(), Mock()
+        )
+
+        coordinator.apply_trigger(" ")
+
+        context.inspect_before_caret.assert_called_once_with("ordinary")
 
     @patch("autocorrect.CGEventGetIntegerValueField")
     def test_trigger_suppression_covers_key_down_and_key_up(self, _get_key_code):
