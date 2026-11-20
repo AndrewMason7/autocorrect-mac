@@ -65,7 +65,10 @@ elif [ "$ACTION" = "on" ]; then
     
     echo "Autocorrect has been activated and is running."
 
+elif [ "$ACTION" = "restart" ]; then
+    "$SCRIPT_DIR/restart.sh"
+
 else
-    echo "Usage: $0 {on|off}"
+    echo "Usage: $0 {on|off|restart}"
     exit 1
 fi
